@@ -1,0 +1,15 @@
+{
+  "openai_base_url": "https://xinyuanai666.com",
+  "openai_api_key": "",
+  "model": "gpt-4o",
+  "top_sectors": 5,
+  "top_stocks": 20,
+  "min_per_sector": 2,
+  "max_per_sector": 5,
+  "results_dir": "results",
+  "enable_realtime_news": true,
+  "news_per_source": 40,
+  "news_workers": 12,
+  "news_total_limit": 3000,
+  "stock_workers": 4
+}
