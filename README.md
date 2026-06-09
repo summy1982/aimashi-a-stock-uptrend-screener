@@ -11,6 +11,7 @@ Aimashi 是一个面向 A 股主板的“新闻热点 + 技术分析 + 大模型
 - 板块映射：将新闻热点映射到 A 股主板相关板块，过滤非主板标的。
 - 候选池筛选：每个热点板块默认输出 2-5 只候选股，避免最终结果过度集中在单一股票。
 - 技术分析：结合 MACD、RSI、KDJ、BOLL、均线、ATR、量价结构、支撑位、压力位、风险收益比进行评分。
+- 稳定兜底：模型超时或返回异常时，程序会使用本地规则继续生成候选池，不会中断整个流程。
 - 对话复盘：分析完成后可围绕输出股票继续向 AI 提问，查看逻辑、风险、价位和观察条件。
 - Windows EXE：普通用户下载 Release 中的 EXE 后，填写 Base URL / API Key / Model 即可使用。
 
@@ -19,7 +20,7 @@ Aimashi 是一个面向 A 股主板的“新闻热点 + 技术分析 + 大模型
 1. 打开 GitHub Releases，下载最新版本的 `AimashiAStock.exe`。
 2. 双击启动软件。
 3. 在界面设置中填写：
-   - `Base URL`：推荐 `https://xinyuanai666.com`
+   - `Base URL`：推荐 `https://xinyuanai666.com/v1`
    - `API Key`：填写你的 OpenAI 兼容接口密钥
    - `Model`：填写可用模型名称，例如 `gpt-4o`、`gpt-4.1` 或你的中转站支持的模型名
 4. 点击“开始分析”，等待新闻抓取、热点分析、板块映射和技术研判完成。
@@ -42,7 +43,7 @@ python main.py
 
 | 配置项 | 说明 |
 | --- | --- |
-| `openai_base_url` | OpenAI 兼容接口地址，推荐 `https://xinyuanai666.com` |
+| `openai_base_url` | OpenAI 兼容接口地址，推荐 `https://xinyuanai666.com/v1` |
 | `openai_api_key` | API 密钥，请不要提交到 Git 仓库 |
 | `model` | 模型名称，需与你的接口服务保持一致 |
 | `top_sectors` | 新闻分析后保留的热点板块数量 |
@@ -71,11 +72,11 @@ pyinstaller --noconfirm --onefile --windowed --name AimashiAStock main.py
 
 **阶段 2 分析较慢怎么办？**
 
-新闻全文分析会消耗较多 token，模型服务响应速度会直接影响耗时。可以换更快的模型，或适当降低 `news_per_source`、`news_total_limit`。
+新闻全文分析会消耗较多 token，模型服务响应速度会直接影响耗时。软件会自动启用规则兜底继续运行；也可以换更快的模型，或适当降低 `news_per_source`、`news_total_limit`。
 
 **为什么没有候选股？**
 
-当新闻和技术面共振不足、实时行情无法获取、模型服务异常或市场整体风险较高时，软件可能降低输出数量。商业实战里“少做错”比“强行给票”更重要。
+当新闻和技术面共振不足、实时行情无法获取或市场整体风险较高时，软件可能降低置信度。新版会尽量保留候选池并给出观察条件，而不是强行给出确定性买入结论。
 
 **结果可以直接买入吗？**
 

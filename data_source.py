@@ -52,6 +52,7 @@ def _requests_get_no_proxy(url: str, params: dict = None, timeout: int = 15) -> 
 _SECTOR_TO_SINA = {
     # 金融
     "银行": "new_jrhy", "金融": "new_jrhy", "券商": "new_jrhy", "证券": "new_jrhy", "保险": "new_jrhy",
+    "高股息": "new_jrhy", "高股息板块": "new_jrhy", "公用事业": "new_dlhy",
     # 房地产
     "房地产": "new_fdc", "地产": "new_fdc",
     # 科技
@@ -81,7 +82,7 @@ _SECTOR_TO_SINA = {
     "建筑": "new_jzjc", "建材": "new_jzjc", "建筑建材": "new_jzjc", "基建": "new_jzjc",
     # 能源
     "光伏": "new_fdsb", "新能源": "new_fdsb", "发电设备": "new_fdsb", "风电": "new_fdsb",
-    "锂电": "new_dzqj",
+    "储能": "new_fdsb", "智能电网": "new_dlhy", "电力设备": "new_fdsb", "电池": "new_dzqj", "钠离子电池": "new_dzqj", "锂电": "new_dzqj", "锂": "new_ysjs",
     # 交通
     "交运": "new_jtys", "交通运输": "new_jtys", "铁路": "new_jtys", "物流": "new_jtys",
     # 其他
@@ -100,6 +101,7 @@ _SECTOR_TO_SINA = {
 # 模糊关键词列表（按优先级排序，用于二次匹配）
 _FUZZY_KEYWORDS = [
     ("银行", "new_jrhy"), ("金融", "new_jrhy"), ("证券", "new_jrhy"), ("券商", "new_jrhy"),
+    ("高股息", "new_jrhy"), ("公用事业", "new_dlhy"),
     ("地产", "new_fdc"), ("房", "new_fdc"),
     ("半导体", "new_dzqj"), ("芯片", "new_dzqj"), ("集成电路", "new_dzqj"),
     ("人工智能", "new_dzxx"), ("AI", "new_dzxx"), ("算力", "new_dzxx"), ("软件", "new_dzxx"), ("计算机", "new_dzxx"),
@@ -109,6 +111,7 @@ _FUZZY_KEYWORDS = [
     ("医药", "new_swzz"), ("生物", "new_swzz"), ("制药", "new_swzz"),
     ("汽车", "new_qczz"), ("新能源车", "new_qczz"),
     ("电力", "new_dlhy"), ("核电", "new_dlhy"), ("发电", "new_fdsb"),
+    ("智能电网", "new_dlhy"), ("电网", "new_dlhy"), ("储能", "new_fdsb"), ("电池", "new_dzqj"), ("锂", "new_ysjs"),
     ("光伏", "new_fdsb"), ("风电", "new_fdsb"), ("新能源", "new_fdsb"),
     ("有色", "new_ysjs"), ("黄金", "new_ysjs"), ("铜", "new_ysjs"),
     ("煤炭", "new_mthy"), ("钢铁", "new_gthy"),
@@ -149,7 +152,15 @@ def get_sector_stock_pool(sector_name: str) -> list[str]:
     """获取板块成分股代码列表（仅主板）。"""
     sina_code = _resolve_sina_code(sector_name)
     if not sina_code:
-        return []
+        combined = []
+        seen = set()
+        for keyword, _ in _FUZZY_KEYWORDS:
+            if keyword in sector_name and keyword != sector_name:
+                for code in get_sector_stock_pool(keyword):
+                    if code not in seen:
+                        seen.add(code)
+                        combined.append(code)
+        return combined[:200]
 
     try:
         # Sina Market Center API - 每页最多300条

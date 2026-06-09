@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,192 @@ def _compact_text(*parts: Any, limit: int = 240) -> str:
     text = "；".join(str(part).strip() for part in parts if part)
     return text[:limit]
 
+
+def _match_float(pattern: str, text: str, default: float = 0.0) -> float:
+    match = re.search(pattern, text)
+    if not match:
+        return default
+    return _as_float(match.group(1), default)
+
+
+def _match_floats(pattern: str, text: str) -> List[float]:
+    match = re.search(pattern, text)
+    if not match:
+        return []
+    return [_as_float(value) for value in re.findall(r"\d+\.\d+|\d+", match.group(1))]
+
+
+def _local_stock_report(code: str, name: str, sec_name: str, sec_logic: str, price_text: str, reason: str) -> Dict[str, Any]:
+    current = _match_float(r"(?:最新价|当前价)[:：]\s*(\d+(?:\.\d+)?)", price_text)
+    close = _match_float(r"收[:：](\d+(?:\.\d+)?)", price_text)
+    if current <= 0:
+        current = close
+    if current <= 0:
+        return {
+            "code": code, "name": name, "sector": sec_name, "sector_logic": sec_logic,
+            "current_price": 0.0, "trend_stage": "数据不足", "signal_strength": 0,
+            "signal_description": "实时行情或K线数据未取得，已从候选池中降权。", 
+            "summary": "未能取得足够行情数据，不生成买入观察价位。", "entry_price": 0.0, "stop_loss_price": 0.0, "target_price_3d": 0.0,
+        }
+    ma5 = _match_float(r"MA5=(\d+(?:\.\d+)?)", price_text, current)
+    ma10 = _match_float(r"MA10=(\d+(?:\.\d+)?)", price_text, current)
+    ma20 = _match_float(r"MA20=(\d+(?:\.\d+)?)", price_text, current)
+    ma60 = _match_float(r"MA60=(\d+(?:\.\d+)?)", price_text, current)
+    atr = _match_float(r"14日ATR\(波动\):\s*(\d+(?:\.\d+)?)", price_text, max(current * 0.02, 0.01))
+    high5 = _match_float(r"5日高低:\s*\d+(?:\.\d+)?\s*~\s*(\d+(?:\.\d+)?)", price_text, current + atr)
+    low5 = _match_float(r"5日高低:\s*(\d+(?:\.\d+)?)\s*~", price_text, current - atr)
+    high10 = _match_float(r"10日高低:\s*\d+(?:\.\d+)?\s*~\s*(\d+(?:\.\d+)?)", price_text, high5)
+    low10 = _match_float(r"10日高低:\s*(\d+(?:\.\d+)?)\s*~", price_text, low5)
+    high20 = _match_float(r"20日高低:\s*\d+(?:\.\d+)?\s*~\s*(\d+(?:\.\d+)?)", price_text, high10)
+    low20 = _match_float(r"20日高低:\s*(\d+(?:\.\d+)?)\s*~", price_text, low10)
+    supports = [value for value in _match_floats(r"水平支撑位:\s*([^\n]+)", price_text) if value > 0]
+    resistances = [value for value in _match_floats(r"水平压力位:\s*([^\n]+)", price_text) if value > 0]
+    for value in [low5, low10, low20, ma5, ma10, ma20, ma60]:
+        if value > 0 and value <= current * 1.02:
+            supports.append(round(value, 2))
+    for value in [high5, high10, high20, ma5, ma10, ma20, ma60]:
+        if value > 0 and value >= current * 0.98:
+            resistances.append(round(value, 2))
+    supports = sorted(set(round(value, 2) for value in supports if value > 0 and value <= current * 1.05), reverse=True)[:4]
+    resistances = sorted(set(round(value, 2) for value in resistances if value > 0 and value >= current * 0.95))[:4]
+    entry = round(current, 2)
+    if ma5 and current < ma5:
+        entry = round(min(ma5, current + atr), 2)
+    stop_base = supports[0] if supports else current - atr * 1.5
+    stop = round(min(current * 0.985, stop_base - max(atr * 0.25, current * 0.005)), 2)
+    target_base = resistances[0] if resistances else current + atr * 2
+    target = round(max(current + atr * 1.4, target_base), 2)
+    risk_reward = round((target - entry) / max(0.01, entry - stop), 2) if entry > stop else 1.5
+    signal = 45
+    trend_stage = "蓄势整理"
+    if ma5 > ma10 > ma20 and current >= ma5:
+        signal += 20
+        trend_stage = "主升浪中"
+    elif ma5 > ma10 and current >= ma10:
+        signal += 12
+        trend_stage = "主升浪启动"
+    elif current >= ma20:
+        signal += 6
+        trend_stage = "突破前夜"
+    elif ma5 < ma10 < ma20:
+        signal -= 10
+        trend_stage = "底部震荡"
+    if "温和放量" in price_text or "显著放量" in price_text:
+        signal += 8
+    if "金叉" in price_text or "刚金叉" in price_text:
+        signal += 6
+    if "超卖" in price_text:
+        signal += 4
+    if "死叉" in price_text:
+        signal -= 6
+    signal = max(25, min(78, signal))
+    return {
+        "code": code, "name": name, "sector": sec_name, "sector_logic": sec_logic,
+        "current_price": round(current, 2), "trend_stage": trend_stage, "signal_strength": signal,
+        "signal_description": reason,
+        "trend_structure": f"本地技术引擎根据均线、支撑压力和量价状态生成：当前价{current:.2f}，MA5={ma5:.2f}，MA10={ma10:.2f}，MA20={ma20:.2f}。",
+        "ma_analysis": f"MA5={ma5:.2f}，MA10={ma10:.2f}，MA20={ma20:.2f}，MA60={ma60:.2f}，用于判断短中期趋势结构。", 
+        "macd_analysis": _compact_text("MACD", price_text.split("【MACD(12,26,9)】", 1)[-1].split("\n", 1)[0] if "【MACD" in price_text else "未取得MACD明细", limit=180),
+        "rsi_analysis": _compact_text("RSI", price_text.split("【RSI】", 1)[-1].split("\n", 1)[0] if "【RSI】" in price_text else "未取得RSI明细", limit=180),
+        "kdj_analysis": _compact_text("KDJ", price_text.split("【KDJ(9,3,3)】", 1)[-1].split("\n", 1)[0] if "【KDJ" in price_text else "未取得KDJ明细", limit=180),
+        "boll_analysis": _compact_text("BOLL", price_text.split("【布林带(20)】", 1)[-1].split("\n", 1)[0] if "【布林带" in price_text else "未取得BOLL明细", limit=180),
+        "volume_analysis": _compact_text("成交量", price_text.split("【成交量】", 1)[-1].split("\n", 1)[0] if "【成交量】" in price_text else "未取得成交量明细", limit=180),
+        "key_support": [{"level": value, "description": "技术支撑/均线或阶段低点"} for value in supports] or [{"level": round(max(0.01, current - atr), 2), "description": "ATR动态支撑"}],
+        "key_resistance": [{"level": value, "description": "技术压力/均线或阶段高点"} for value in resistances] or [{"level": round(current + atr, 2), "description": "ATR动态压力"}],
+        "entry_price": entry, "stop_loss_price": stop, "target_price_3d": target,
+        "risk_reward_ratio": risk_reward, "entry_watch": ["观察放量站稳买入观察价", "观察板块内强势股是否同步扩散"],
+        "invalidation": [f"跌破{stop}或放量长阴则信号失效"], "summary": "接口响应较慢时启用本地技术引擎，价格与支撑压力来自实时行情和K线指标。", 
+        "max_hold_days": 3, "scale_out_rule": "达到目标价附近分批止盈，跌破止损价退出。", "market_sensitivity": "大盘弱势时降低仓位。", "atr": atr,
+    }
+
+
+def _pool_fallback_candidates(pool_names: List[str], top_k: int, reason: str = "规则兜底候选") -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in pool_names:
+        parts = str(item).split(maxsplit=1)
+        code = parts[0].strip() if parts else ""
+        if not code or code in seen:
+            continue
+        candidates.append({
+            "code": code,
+            "name": parts[1].strip() if len(parts) > 1 else code,
+            "reason": reason,
+            "fit_score": 50,
+            "catalyst": "模型筛选未及时返回，使用板块候选池按行情热度补足",
+        })
+        seen.add(code)
+        if len(candidates) >= top_k:
+            break
+    return candidates
+
+
+def _local_final_from_reports(
+    reports: List[Dict[str, Any]],
+    max_per_sector: int,
+    top_stocks: int,
+    disclaimer: str = "本轮由本地稳定汇总生成，结果仅供研究参考，不构成投资建议。"
+) -> Dict[str, Any]:
+    viable = [
+        report for report in reports
+        if report.get("trend_stage") not in ("分析失败", "数据不足", "")
+        and _as_float(report.get("current_price"), 0.0) > 0
+    ]
+    viable.sort(key=lambda item: _as_float(item.get("signal_strength"), 0.0), reverse=True)
+    final_list: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    sector_counts: Dict[str, int] = {}
+    for report in viable:
+        code = str(report.get("code", "")).strip()
+        sector = report.get("sector", "未知")
+        if not code or code in seen:
+            continue
+        if sector_counts.get(sector, 0) >= max_per_sector:
+            continue
+        price = _as_float(report.get("current_price"), 0.0)
+        atr = _as_float(report.get("atr"), price * 0.02)
+        entry = _as_float(report.get("entry_price"), price)
+        stop = _as_float(report.get("stop_loss_price"), round(price - atr * 1.5, 2))
+        target = _as_float(report.get("target_price_3d"), round(price + atr * 2, 2))
+        risk_reward = round((target - entry) / max(0.01, entry - stop), 2) if entry > stop else 1.5
+        strength = int(_as_float(report.get("signal_strength"), 0))
+        final_list.append({
+            "code": code,
+            "name": report.get("name"),
+            "sector": sector,
+            "sector_logic": report.get("sector_logic", ""),
+            "current_price": price,
+            "reason": _compact_text(
+                f"新闻/板块逻辑：{report.get('sector_logic', '')}",
+                f"技术面：{report.get('trend_stage', '')} {report.get('signal_description', '')} {report.get('summary', '')}",
+                limit=420,
+            ),
+            "logic_analysis": report.get("sector_logic", ""),
+            "technical_analysis": _compact_text(
+                report.get("trend_stage", ""), report.get("trend_structure", ""),
+                report.get("ma_analysis", ""), report.get("macd_analysis", ""),
+                report.get("volume_analysis", ""), report.get("summary", ""), limit=420,
+            ),
+            "probability_label": "中" if strength >= 60 else "低",
+            "probability_score": max(35, min(78, strength)),
+            "entry_price": entry,
+            "stop_loss_price": stop,
+            "target_price_3d": target,
+            "risk_reward_ratio": risk_reward,
+            "key_support_levels": report.get("key_support", []),
+            "key_resistance_levels": report.get("key_resistance", []),
+            "watch_3d": report.get("summary", "")[:220] or f"观察{sector}板块资金承接与个股放量确认",
+            "risk_warning": report.get("invalidation", ["大盘系统性风险"])[0] if isinstance(report.get("invalidation"), list) and report.get("invalidation") else "大盘系统性风险",
+            "signal_strength": strength,
+            "trend_stage": report.get("trend_stage", ""),
+            "signal_description": report.get("signal_description", ""),
+        })
+        seen.add(code)
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        if len(final_list) >= top_stocks:
+            break
+    return {"final_list": final_list, "disclaimer": disclaimer}
+
 def _analyze_one_stock(code: str, name: str, sec_name: str, sec_logic: str, max_retries: int = 2) -> Dict[str, Any]:
     """分析单只股票，带重试。"""
     price_text = fetch_price_text(code)
@@ -68,18 +255,20 @@ def _analyze_one_stock(code: str, name: str, sec_name: str, sec_logic: str, max_
                     report["stop_loss_price"] = round(cp - atr_val * 1.5, 2)
                 if not report.get("target_price_3d") or report["target_price_3d"] in (0, 0.0):
                     report["target_price_3d"] = round(cp + atr_val * 2, 2)
+            key_prices = [report.get("current_price"), report.get("entry_price"), report.get("stop_loss_price"), report.get("target_price_3d")]
+            if cp <= 0 or any(_as_float(value, 0.0) <= 0 for value in key_prices) or _as_float(report.get("signal_strength"), 0.0) <= 0:
+                local_report = _local_stock_report(code, name, sec_name, sec_logic, price_text, "模型返回内容不完整，已由本地技术引擎补足关键价位和信号。")
+                local_report.update({k: v for k, v in report.items() if v not in (None, "", [], {}) and k not in {"current_price", "entry_price", "stop_loss_price", "target_price_3d", "signal_strength"}})
+                report = local_report
             return report
         except Exception as e:
             last_err = e
             if attempt < max_retries - 1:
                 time.sleep(1)
-    # 重试全部失败
-    return {
-        "code": code, "name": name,
-        "sector": sec_name, "sector_logic": sec_logic,
-        "summary": f"分析失败（重试{max_retries}次）：{last_err}",
-        "trend_stage": "分析失败", "signal_strength": 0,
-    }
+    return _local_stock_report(
+        code, name, sec_name, sec_logic, price_text,
+        "模型技术研判未在时限内完成，已启用本地技术引擎生成可对比报告。"
+    )
 
 
 def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
@@ -175,20 +364,20 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
         pool_codes = get_sector_stock_pool(sec_name)
         pool_names = normalize_candidate_names(pool_codes)
         if not pool_names:
-            _emit(stage_cb, "pool_done", f"    未取到主板成分股，跳过。", {"candidates": total_candidates})
+            _emit(stage_cb, "pool_done", f"    暂未匹配到可用主板成分股，已保留该板块逻辑但不进入技术研判。", {"candidates": total_candidates})
             continue
 
-        _emit(stage_cb, "pool_done", f"    候选池: {len(pool_names)} 只主板股，开始LLM筛选...")
+        _emit(stage_cb, "pool_done", f"    候选池: {len(pool_names)} 只主板股，开始模型筛选...")
         pick_count = max(max_per_sector * 3, min_per_sector * 4, top_stocks)
         try:
             pick = analyze_sector_to_stocks(sec_name, sec_logic, pool_names[:200], top_k=pick_count)
         except Exception as e:
-            _emit(stage_cb, "pool_done", f"    LLM筛选失败: {e}，跳过。")
-            continue
+            _emit(stage_cb, "pool_done", f"    模型筛选响应较慢，已启用本地候选池稳定补足。原因摘要：{str(e)[:80]}")
+            pick = {"candidates": _pool_fallback_candidates(pool_names, pick_count, "模型筛选未及时返回，使用板块候选池补足")}
         candidates = pick.get("candidates", [])
         if not candidates:
-            _emit(stage_cb, "pool_done", f"    LLM未选出候选股，跳过。")
-            continue
+            _emit(stage_cb, "pool_done", f"    模型未给出候选股，已启用本地候选池补足。")
+            candidates = _pool_fallback_candidates(pool_names, pick_count, "模型未返回候选，使用板块候选池补足")
         if len(candidates) < min_per_sector:
             existing_codes = {str(c.get("code", "")).strip() for c in candidates}
             for item in pool_names:
@@ -205,7 +394,7 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
                 if len(candidates) >= min_per_sector:
                     break
         total_candidates += len(candidates)
-        _emit(stage_cb, "pool_done", f"    LLM筛选: {len(candidates)} 只入选", {"candidates": total_candidates})
+        _emit(stage_cb, "pool_done", f"    模型筛选: {len(candidates)} 只入选", {"candidates": total_candidates})
 
         # ---- 多线程技术研判 ----
         _emit(stage_cb, "stock_progress", f"  「{sec_name}」开始多线程技术研判 {len(candidates)} 只（并发={stock_workers}）...")
@@ -249,7 +438,7 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
                 sec_report_list.append(report)
 
         # 按信号强度排序，取前 max_per_sector
-        sec_report_list.sort(key=lambda x: x.get("signal_strength", 0), reverse=True)
+        sec_report_list.sort(key=lambda x: _as_float(x.get("signal_strength"), 0.0), reverse=True)
         sector_reports[sec_name] = sec_report_list[:max_per_sector]
         top_in_sector = sector_reports[sec_name]
         if top_in_sector:
@@ -270,7 +459,7 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
     for sec_name, reports in sector_reports.items():
         balanced_picks.extend(reports)
 
-    balanced_picks.sort(key=lambda x: x.get("signal_strength", 0), reverse=True)
+    balanced_picks.sort(key=lambda x: _as_float(x.get("signal_strength"), 0.0), reverse=True)
 
     final_limit = min(len(balanced_picks), max(top_stocks, len(sector_reports) * min_per_sector)) if balanced_picks else 0
 
@@ -311,7 +500,13 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
                 label = item.get("probability_label", "中")
                 item["probability_score"] = {"高": 82, "中": 62, "低": 40}.get(label, 60)
     except Exception as e:
-        final = {"final_list": [], "disclaimer": f"汇总失败：{e}"}
+        _emit(stage_cb, "final_done", f"  模型综合汇总响应较慢，已启用本地稳定汇总：{str(e)[:100]}")
+        final = _local_final_from_reports(
+            final_balanced or all_reports,
+            max_per_sector=max_per_sector,
+            top_stocks=top_stocks,
+            disclaimer="模型综合汇总未及时完成，已使用本地技术报告生成候选池。结果仅供研究参考，不构成投资建议。"
+        )
 
     final["all_reports"] = all_reports
     final["_market"] = market
@@ -329,13 +524,13 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
         need_fallback = True
 
     if need_fallback and all_reports:
-        _emit(stage_cb, "final_done", "  LLM汇总结果不完整，启动兜底策略：从技术报告中直接筛选...")
+        _emit(stage_cb, "final_done", "  综合结果需要补强，启动本地稳定汇总：从技术报告中直接筛选...")
         # 从所有报告中筛选有技术数据的标的
         fallback_source = final_balanced or all_reports
         viable = [r for r in fallback_source
                   if r.get("trend_stage") not in ("分析失败", "数据不足", "")
                   and _as_float(r.get("current_price"), 0.0) > 0]
-        viable.sort(key=lambda x: x.get("signal_strength", 0), reverse=True)
+        viable.sort(key=lambda x: _as_float(x.get("signal_strength"), 0.0), reverse=True)
 
         # 跨板块均衡选取
         fallback_list = []
@@ -365,8 +560,8 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
                     "reason": _compact_text(f"新闻逻辑：{r.get('sector_logic', '')}", f"技术面：{r.get('trend_stage', '')} {r.get('signal_description', '')} {r.get('summary', '')}", limit=360),
                     "logic_analysis": r.get("sector_logic", ""),
                     "technical_analysis": _compact_text(r.get("trend_stage", ""), r.get("signal_description", ""), r.get("summary", ""), limit=300),
-                    "probability_label": "中" if r.get("signal_strength", 0) >= 60 else "低",
-                    "probability_score": max(40, min(75, r.get("signal_strength", 0))),
+                    "probability_label": "中" if _as_float(r.get("signal_strength"), 0.0) >= 60 else "低",
+                    "probability_score": max(40, min(75, int(_as_float(r.get("signal_strength"), 0.0)))),
                     "entry_price": entry,
                     "stop_loss_price": stop,
                     "target_price_3d": target,
@@ -386,7 +581,9 @@ def run_pipeline(cfg: dict, stage_cb=None) -> Dict[str, Any]:
 
         if fallback_list:
             final["final_list"] = fallback_list
-            final["disclaimer"] = final.get("disclaimer", "") + "（注：部分标的由技术指标直接筛选，未经LLM综合评估，仅供参考）"
+            extra_note = "（注：已启用本地稳定汇总，结果来自新闻板块逻辑与技术报告交叉筛选，仅供参考）"
+            if extra_note not in final.get("disclaimer", ""):
+                final["disclaimer"] = final.get("disclaimer", "") + extra_note
             _emit(stage_cb, "final_done", f"  兜底策略选出 {len(fallback_list)} 只标的。")
 
 

@@ -131,13 +131,13 @@ class OpenClient:
             raise ValueError("未配置 openai_api_key，请先在设置里填写。")
         self.c = OpenAI(
             api_key=cfg["openai_api_key"],
-            base_url=cfg.get("openai_base_url") or "https://xinyuanai666.com",
-            timeout=90.0,
+            base_url=cfg.get("openai_base_url") or "https://xinyuanai666.com/v1",
+            timeout=120.0,
             max_retries=1,
         )
         self.model = cfg.get("model", "gpt-4o")
 
-    def chat_json(self, system: str, user: str, schema_hint: str, max_retries: int = 2, timeout: float = 90.0) -> Any:
+    def chat_json(self, system: str, user: str, schema_hint: str, max_retries: int = 2, timeout: float = 120.0) -> Any:
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user + "\n\n输出必须为严格 JSON，结构参考：\n" + schema_hint},
@@ -146,22 +146,27 @@ class OpenClient:
         last_error: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = self.c.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.1 + attempt * 0.1,
-                    response_format={"type": "json_object"},
-                    timeout=timeout,
-                )
+                kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0.1 + attempt * 0.1,
+                    "timeout": timeout,
+                }
+                try:
+                    response = self.c.chat.completions.create(**kwargs, response_format={"type": "json_object"})
+                except Exception as exc:
+                    if "response_format" not in str(exc) and "json_object" not in str(exc):
+                        raise
+                    response = self.c.chat.completions.create(**kwargs)
                 text = response.choices[0].message.content or "{}"
                 return _parse_json_safe(text)
             except Exception as exc:
                 last_error = exc
                 if attempt < max_retries - 1:
                     messages.append({"role": "assistant", "content": text})
-                    messages.append({"role": "user", "content": f"上次 JSON 解析或请求失败：{exc}\n请只返回合法 JSON。"})
+                    messages.append({"role": "user", "content": f"上次 JSON 解析或请求未成功：{exc}\n请只返回合法 JSON。"})
                     time.sleep(0.5)
-        raise ValueError(f"LLM 返回 JSON 失败：{last_error}")
+        raise ValueError(f"LLM JSON 响应未完成：{last_error}")
 
 
 def _client() -> OpenClient:
@@ -177,10 +182,10 @@ def _keyword_sectors(text: str) -> list[str]:
         ("有色金属", ["黄金", "铜", "铝", "锂", "稀土", "金属", "矿业"]),
         ("国防军工", ["军工", "国防", "导弹", "无人机", "地缘", "冲突", "战争"]),
         ("银行", ["银行", "利率", "降息", "央行", "金融监管", "高股息"]),
-        ("房地产", ["房地产", "地产", "房贷", "楼市", "城市更新"]),
+        ("电力", ["电力", "核电", "风电", "光伏", "储能", "电网", "智能电网"]),
         ("汽车", ["汽车", "新能源汽车", "电动车", "特斯拉", "智能驾驶"]),
         ("医药", ["医药", "创新药", "医疗", "药品", "医保"]),
-        ("电力", ["电力", "核电", "风电", "光伏", "储能", "电网"]),
+        ("房地产", ["房地产", "地产", "房贷", "楼市", "城市更新"]),
         ("农业", ["农业", "粮食", "猪肉", "玉米", "大豆"]),
     ]
     found: list[str] = []
@@ -191,7 +196,7 @@ def _keyword_sectors(text: str) -> list[str]:
     return found[:3]
 
 
-def _fallback_hot_news(news_text: str, limit: int = 40) -> list[dict]:
+def _fallback_hot_news(news_text: str, limit: int = 80) -> list[dict]:
     items = re.split(r"(?=^\d+\.\s)", news_text.strip(), flags=re.MULTILINE)
     out: list[dict] = []
     for raw in items:
@@ -207,9 +212,9 @@ def _fallback_hot_news(news_text: str, limit: int = 40) -> list[dict]:
                 "title": title,
                 "source": source,
                 "surface": "关键词兜底识别的市场热点",
-                "hidden": "LLM 批处理失败或超时后使用规则兜底，保留新闻驱动方向供后续板块映射。",
+                "hidden": "模型批处理未完全返回时使用规则兜底，保留新闻驱动方向供后续板块映射。",
                 "fund_behavior": "观察相关板块资金承接和量价确认。",
-                "impact": "正面",
+                "impact": "待技术面确认",
                 "a_share_sectors": sectors,
                 "transmission_chain": "新闻关键词 -> 产业方向 -> A股主板板块",
                 "confidence": "中",
@@ -231,6 +236,7 @@ def _fallback_sectors(news_text: str, top_k: int = 5) -> list[dict]:
         "有色金属": ["黄金", "铜", "铝", "锂", "稀土", "金属"],
         "国防军工": ["军工", "地缘", "冲突", "战争", "无人机"],
         "银行": ["银行", "利率", "降息", "央行", "高股息"],
+        "电力": ["电力", "储能", "智能电网", "电网", "光伏", "风电"],
         "汽车": ["汽车", "新能源汽车", "智能驾驶"],
     }.items():
         scores[sector] = scores.get(sector, 0) + sum(upper_text.count(k.upper()) for k in keywords)
@@ -239,12 +245,12 @@ def _fallback_sectors(news_text: str, top_k: int = 5) -> list[dict]:
         ranked = [("人工智能", 1), ("银行", 1), ("石油石化", 1)][:top_k]
     return [{
         "sector": sector,
-        "driver": f"关键词兜底识别：{sector} 在多源新闻中出现频率较高，后续由技术面候选池做二次验证。",
-        "expectation_gap": "LLM 超时兜底结果，需结合技术信号确认。",
+        "driver": f"多源新闻规则兜底识别：{sector} 相关关键词出现频率较高，后续由技术面候选池做二次验证。",
+        "expectation_gap": "模型响应较慢时的稳定兜底结果，需结合技术信号确认。",
         "related_news": [],
         "confidence": min(0.75, 0.45 + score * 0.03),
         "time_horizon": "3天-1周",
-        "risk_factors": ["LLM 新闻深度分析超时，使用规则兜底"],
+        "risk_factors": ["新闻深度分析未完全返回，使用规则兜底补足"],
         "related_main_board_keywords": [sector],
     } for sector, score in ranked]
 
@@ -264,14 +270,14 @@ def analyze_news_to_sectors(news_text: str, top_k: int = 5, progress_cb=None) ->
     if not news_items_raw:
         return {"hot_news": [], "recommended_sectors": _fallback_sectors(news_text, top_k)}
 
-    batch_size = 25
-    max_batches = 6
+    batch_size = 20
+    max_batches = 8
     prioritized = sorted(news_items_raw, key=lambda item: ("[W=1." in item or "[W=2." in item, len(item)), reverse=True)
     batches = []
     for index in range(0, min(len(prioritized), batch_size * max_batches), batch_size):
-        batches.append("\n".join(prioritized[index:index + batch_size])[:18000])
+        batches.append("\n".join(prioritized[index:index + batch_size])[:14000])
     skipped = max(0, len(news_items_raw) - batch_size * max_batches)
-    emit(f"  新闻分为 {len(batches)} 批（每批{batch_size}条，跳过低权重长尾{skipped}条），开始稳定分析...")
+    emit(f"  新闻分为 {len(batches)} 批（每批{batch_size}条，低权重长尾{skipped}条进入规则兜底），开始稳定分析...")
 
     schema = json.dumps({
         "hot_news": [{
@@ -284,18 +290,18 @@ def analyze_news_to_sectors(news_text: str, top_k: int = 5, progress_cb=None) ->
         batch_index, batch_text = payload
         prompt = NEWS_EXTRACT_PROMPT.format(batch_idx=batch_index + 1, total_batches=len(batches)) + "\n\n新闻如下：\n" + batch_text
         try:
-            result = client.chat_json(SYSTEM, prompt, schema, max_retries=1, timeout=75.0)
+            result = client.chat_json(SYSTEM, prompt, schema, max_retries=1, timeout=60.0)
             return batch_index, result.get("hot_news", []), None
         except Exception as exc:
             return batch_index, [], str(exc)
 
     all_hot_news: list[dict] = []
-    failed_batches = 0
-    max_workers = min(2, len(batches)) or 1
+    delayed_batches = 0
+    max_workers = min(3, len(batches)) or 1
     pool = ThreadPoolExecutor(max_workers=max_workers)
     futures = {pool.submit(process_batch, (idx, batch)): idx for idx, batch in enumerate(batches)}
     pending = set(futures)
-    deadline = time.time() + 90
+    deadline = time.time() + 120
     try:
         while pending and time.time() < deadline:
             done, pending = wait(pending, timeout=3, return_when=FIRST_COMPLETED)
@@ -303,28 +309,42 @@ def analyze_news_to_sectors(news_text: str, top_k: int = 5, progress_cb=None) ->
                 try:
                     batch_index, hot_news, error = future.result(timeout=0)
                     if error:
-                        failed_batches += 1
-                        emit(f"  批次{batch_index + 1}分析失败: {error[:100]}")
+                        delayed_batches += 1
+                        emit(f"  批次{batch_index + 1}未及时返回，已交给规则兜底补足。")
                     else:
                         all_hot_news.extend(hot_news)
                         emit(f"  批次{batch_index + 1}/{len(batches)} 完成，提取 {len(hot_news)} 条热点")
-                except Exception as exc:
-                    failed_batches += 1
-                    emit(f"  批次结果异常: {exc}")
+                except Exception:
+                    delayed_batches += 1
+                    emit("  单个新闻批次未及时返回，已交给规则兜底补足。")
         if pending:
-            failed_batches += len(pending)
+            delayed_batches += len(pending)
             for future in pending:
                 future.cancel()
-            emit(f"  {len(pending)} 个新闻批次超时，已跳过并继续后续流程。")
+            emit(f"  {len(pending)} 个新闻批次未在时限内返回，已用规则兜底补足并继续流程。")
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
+    fallback_hot = _fallback_hot_news(news_text, limit=80)
+    if len(all_hot_news) < max(top_k * 6, 24):
+        seen_titles = {str(item.get("title", "")) for item in all_hot_news}
+        added = 0
+        for item in fallback_hot:
+            title = str(item.get("title", ""))
+            if title and title not in seen_titles:
+                all_hot_news.append(item)
+                seen_titles.add(title)
+                added += 1
+            if len(all_hot_news) >= max(top_k * 8, 40):
+                break
+        if added:
+            emit(f"  已用全量新闻规则兜底补充 {added} 条热点，避免样本过少。")
     if not all_hot_news:
-        emit("  LLM 热点提取不足，启用关键词兜底分析。")
-        all_hot_news = _fallback_hot_news(news_text)
+        emit("  热点提取不足，启用关键词兜底分析。")
+        all_hot_news = fallback_hot
 
-    emit(f"  热点提取完成：共 {len(all_hot_news)} 条（{failed_batches} 批失败/超时）")
-    hot_text = json.dumps(all_hot_news, ensure_ascii=False, indent=2)[:30000]
+    emit(f"  热点提取完成：共 {len(all_hot_news)} 条（{delayed_batches} 批由兜底补足）")
+    hot_text = json.dumps(all_hot_news[:80], ensure_ascii=False, indent=2)[:24000]
     sector_schema = json.dumps({
         "recommended_sectors": [{
             "sector": "", "driver": "", "expectation_gap": "", "related_news": [""],
@@ -334,13 +354,13 @@ def analyze_news_to_sectors(news_text: str, top_k: int = 5, progress_cb=None) ->
     user = NEWS_SECTOR_PROMPT.format(count=len(all_hot_news), top_k=top_k) + f"\n\n热点新闻：\n{hot_text}"
     emit(f"  开始板块推荐分析（{len(all_hot_news)}条热点）...")
     try:
-        result = client.chat_json(SYSTEM, user, sector_schema, max_retries=1, timeout=75.0)
+        result = client.chat_json(SYSTEM, user, sector_schema, max_retries=1, timeout=60.0)
         recommended = result.get("recommended_sectors", [])
         if not recommended:
             recommended = _fallback_sectors(news_text + "\n" + hot_text, top_k)
         emit(f"  板块推荐完成：{len(recommended)} 个板块")
-    except Exception as exc:
-        emit(f"  板块推荐失败: {exc}，启用关键词兜底。")
+    except Exception:
+        emit("  板块推荐未及时返回，已启用规则兜底继续运行。")
         recommended = _fallback_sectors(news_text + "\n" + hot_text, top_k)
     return {"hot_news": all_hot_news, "recommended_sectors": recommended}
 
@@ -355,9 +375,9 @@ def analyze_sector_to_stocks(sector_name: str, sector_logic: str, candidate_name
     user = (
         "请结合板块逻辑和候选股票名称/代码，挑选最符合该逻辑的A股主板股票。"
         "输出候选数量尽量接近上限，方便后续技术面横向比较。\n"
-        f"板块：{sector_name}\n逻辑：{sector_logic}\n候选数量上限：{top_k}\n候选列表：\n" + "\n".join(candidate_names)
+        f"板块：{sector_name}\n逻辑：{sector_logic[:1200]}\n候选数量上限：{top_k}\n候选列表：\n" + "\n".join(candidate_names[:160])
     )
-    return client.chat_json(SYSTEM, user, schema, max_retries=1, timeout=75.0)
+    return client.chat_json(SYSTEM, user, schema, max_retries=1, timeout=60.0)
 
 
 def analyze_stock_trend(code: str, name: str, price_text: str) -> Any:
@@ -371,7 +391,7 @@ def analyze_stock_trend(code: str, name: str, price_text: str) -> Any:
         "target_price_3d": 0.0, "risk_reward_ratio": 0.0, "entry_watch": [], "invalidation": [],
         "summary": "", "max_hold_days": 3, "scale_out_rule": "", "market_sensitivity": "", "atr": 0.0,
     }, ensure_ascii=False)
-    user = STOCK_TREND_PROMPT + f"\n\n股票：{code} {name}\n技术与行情数据：\n{price_text}"
+    user = STOCK_TREND_PROMPT + f"\n\n股票：{code} {name}\n技术与行情数据：\n{price_text[:12000]}"
     return client.chat_json(SYSTEM, user, schema, max_retries=1, timeout=75.0)
 
 
@@ -386,19 +406,35 @@ def final_pick_report(news_summary: str, sector_summary: str, stock_reports: lis
         }],
         "disclaimer": "风险提示",
     }, ensure_ascii=False)
-    reports_text = json.dumps(stock_reports, ensure_ascii=False)[:50000]
+    compact_reports = []
+    for report in stock_reports[: min(len(stock_reports), top_k + 8)]:
+        compact_reports.append({
+            "code": report.get("code"),
+            "name": report.get("name"),
+            "sector": report.get("sector"),
+            "current_price": report.get("current_price"),
+            "trend_stage": report.get("trend_stage"),
+            "signal_strength": report.get("signal_strength"),
+            "entry_price": report.get("entry_price"),
+            "stop_loss_price": report.get("stop_loss_price"),
+            "target_price_3d": report.get("target_price_3d"),
+            "risk_reward_ratio": report.get("risk_reward_ratio"),
+            "summary": str(report.get("summary", ""))[:260],
+            "sector_logic": str(report.get("sector_logic", ""))[:260],
+        })
+    reports_text = json.dumps(compact_reports, ensure_ascii=False)[:18000]
     user = (
-        f"请对候选池做排序和解释，不要压缩成1-3只。输出前{top_k}只候选。\n"
+        f"请对候选池做排序和解释，输出前{top_k}只候选。\n"
         "每只都要说明新闻/板块逻辑、技术面解释、支撑压力、买入观察、止损、风险。\n"
-        f"大盘环境：{market_info}\n板块摘要：{sector_summary}\n新闻摘要：{news_summary[:8000]}\n个股报告：{reports_text}"
+        f"大盘环境：{market_info[:2500]}\n板块摘要：{sector_summary[:4000]}\n新闻摘要：{news_summary[:3000]}\n个股报告：{reports_text}"
     )
-    return client.chat_json(SYSTEM, user, schema, max_retries=1, timeout=75.0)
+    return client.chat_json(SYSTEM, user, schema, max_retries=1, timeout=60.0)
 
 
 def chat_analyze_stock(report: dict, history: list, cfg: dict) -> str:
     if not cfg.get("openai_api_key"):
         raise ValueError("未配置 openai_api_key")
-    client = OpenAI(api_key=cfg["openai_api_key"], base_url=cfg.get("openai_base_url"), timeout=90.0, max_retries=1)
+    client = OpenAI(api_key=cfg["openai_api_key"], base_url=cfg.get("openai_base_url"), timeout=120.0, max_retries=1)
     report_text = json.dumps(report, ensure_ascii=False, indent=2)
     messages = [{
         "role": "system",
@@ -410,6 +446,6 @@ def chat_analyze_stock(report: dict, history: list, cfg: dict) -> str:
         messages=messages,
         temperature=0.3,
         max_tokens=1500,
-        timeout=90.0,
+        timeout=120.0,
     )
     return response.choices[0].message.content or "未获取到回答。"

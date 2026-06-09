@@ -39,11 +39,11 @@ def _strip_html(s: str) -> str:
     return _clean(BeautifulSoup(s, "html.parser").get_text())
 
 
-def _get(url: str, timeout: int = 6, extra_headers: dict | None = None) -> requests.Response:
+def _get(url: str, timeout: int = 6, extra_headers: dict | None = None, params: dict | None = None) -> requests.Response:
     h = {**_HEADERS, **(extra_headers or {})}
     s = requests.Session()
     s.trust_env = False
-    return s.get(url, headers=h, timeout=timeout, allow_redirects=True)
+    return s.get(url, params=params, headers=h, timeout=timeout, allow_redirects=True)
 
 
 def _http_get_direct(host: str, path: str, timeout: int = 6, https: bool = True) -> str:

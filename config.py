@@ -1,9 +1,9 @@
-﻿import json
+import json
 import sys
 from pathlib import Path
 
 DEFAULT = {
-    "openai_base_url": "https://xinyuanai666.com",
+    "openai_base_url": "https://xinyuanai666.com/v1",
     "openai_api_key": "",
     "model": "gpt-4o",
     "top_sectors": 5,
@@ -26,6 +26,15 @@ def _base_dir() -> Path:
     return Path(__file__).parent
 
 
+def _normalize_config(data: dict) -> dict:
+    data = dict(data or {})
+    data["enable_realtime_news"] = True
+    data.pop("offline_demo", None)
+    if data.get("openai_base_url") in {"https://xinyuanai666.com", "http://xinyuanai666.com"}:
+        data["openai_base_url"] = "https://xinyuanai666.com/v1"
+    return {**DEFAULT, **data}
+
+
 def config_path() -> Path:
     return _base_dir() / "config.json"
 
@@ -39,15 +48,10 @@ def load_config() -> dict:
             data = {}
     else:
         data = {}
-    data["enable_realtime_news"] = True
-    data.pop("offline_demo", None)
-    merged = {**DEFAULT, **data}
-    return merged
+    return _normalize_config(data)
 
 
 def save_config(data: dict) -> None:
     p = config_path()
-    data["enable_realtime_news"] = True
-    data.pop("offline_demo", None)
-    out = {**DEFAULT, **data}
+    out = _normalize_config(data)
     p.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")

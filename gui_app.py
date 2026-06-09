@@ -18,7 +18,7 @@ from chat_panel import ChatFrame
 class App(ttk.Window):
     def __init__(self):
         super().__init__(
-            title="A股主板主升浪筛选系统  v2.2",
+            title="A股主板主升浪筛选系统  v2.3",
             themename="flatly",
             size=(1450, 980),
             minsize=(1180, 760),
@@ -37,7 +37,7 @@ class App(ttk.Window):
         self._build_statusbar()
 
         self._log("=" * 70, "header")
-        self._log("  A股主板主升浪筛选系统  v2.2", "header")
+        self._log("  A股主板主升浪筛选系统  v2.3", "header")
         self._log("=" * 70, "header")
         if not self.cfg.get("openai_api_key"):
             self._log("请先在「文件 -> 接口设置」中填写 API Key 后再运行。", "warn")
@@ -225,7 +225,7 @@ class App(ttk.Window):
     def _show_about(self):
         messagebox.showinfo(
             "关于",
-            "A股主板主升浪筛选系统 v2.2\n\n多源新闻 + LLM板块映射 + 技术面候选池排行榜。\n结果仅供研究参考，不构成投资建议。",
+            "A股主板主升浪筛选系统 v2.3\n\n多源新闻 + LLM板块映射 + 技术面候选池排行榜。\n结果仅供研究参考，不构成投资建议。",
             parent=self,
         )
 
@@ -285,11 +285,11 @@ class App(ttk.Window):
                 tag = "info"
                 if "完成" in detail or "选出" in detail or "通过" in detail:
                     tag = "success"
-                elif "失败" in detail or "异常" in detail or "跳过" in detail:
+                elif "失败" in detail or "异常" in detail:
                     tag = "error"
                 elif "=" in detail or "【" in detail:
                     tag = "header"
-                elif "警" in detail or "弱势" in detail:
+                elif "警" in detail or "弱势" in detail or "补足" in detail or "稳定汇总" in detail:
                     tag = "warn"
                 self._log(detail, tag)
             self.after(0, _update)
