@@ -1,0 +1,60 @@
+name: Daily Stock Screener
+
+on:
+  schedule:
+    # 每天北京时间 8:00 (UTC 00:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run stock screener
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MODEL: ${{ secrets.MODEL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Create config if not exists
+          if [ ! -f config.json ]; then
+            cat > config.json << EOF
+          {
+            "openai_base_url": "$OPENAI_BASE_URL",
+            "openai_api_key": "$OPENAI_API_KEY",
+            "model": "$MODEL",
+            "top_sectors": 5,
+            "top_stocks": 20,
+            "min_per_sector": 2,
+            "max_per_sector": 5,
+            "results_dir": "results",
+            "enable_realtime_news": true
+          }
+          EOF
+          fi
+
+          # Run pipeline
+          python run_once.py
+
+      - name: Send results to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python send_telegram.py
