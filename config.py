@@ -3,11 +3,11 @@ import sys
 from pathlib import Path
 
 DEFAULT = {
-    "openai_base_url": "https://xinyuanai666.com/v1",
+    "openai_base_url": "",
     "openai_api_key": "",
-    "model": "gpt-4o",
+    "model": "",
     "top_sectors": 5,
-    "top_stocks": 20,
+    "top_stocks": 10,
     "min_per_sector": 2,
     "max_per_sector": 5,
     "results_dir": "results",
